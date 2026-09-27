@@ -10,7 +10,7 @@ import type { ProcessState } from '../types/process'
 import MetricPanel from './MetricPanel'
 import { makeProcessStream } from '../data/processStreams'
 
-const modelUrl = '/models/carbon_capture_system.glb'
+const modelUrl = `${import.meta.env.BASE_URL}models/carbon_capture_system.glb`
 
 type EquipmentKey = 'flue_gas_inlet' | 'pretreatment' | 'adsorber' | 'regeneration' | 'co2_tank' | 'stack'
 const equipmentNames: EquipmentKey[] = ['flue_gas_inlet', 'pretreatment', 'adsorber', 'regeneration', 'co2_tank', 'stack']
