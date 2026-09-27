@@ -6,21 +6,22 @@ type HeaderProps = {
 }
 
 function Header({ timestamp, page = 'monitoring', title, subtitle }: HeaderProps) {
+  const appBase = import.meta.env.BASE_URL
   return (
     <header className="app-header">
       <aside className="app-sidebar" aria-label="Main navigation">
-        <a className="brand" href="/" aria-label="ChitoCapture home">
+        <a className="brand" href={appBase} aria-label="ChitoCapture home">
           <span className="brand-mark" aria-hidden="true"><span /></span>
           <span className="brand-word">Chito<span>Capture</span></span>
         </a>
         <span className="sidebar-caption">CARBON CAPTURE</span>
         <nav className="sidebar-nav">
-          <a href="/" className={page === 'executive' ? 'active' : ''} aria-current={page === 'executive' ? 'page' : undefined}><span aria-hidden="true">▥</span>Executive Dashboard</a>
-          <a href="/?page=process-monitoring" className={page === 'monitoring' ? 'active' : ''} aria-current={page === 'monitoring' ? 'page' : undefined}><span aria-hidden="true">◫</span>Process Monitoring</a>
-          <a href="/?page=carbon-flow" className={page === 'carbon-flow' ? 'active' : ''} aria-current={page === 'carbon-flow' ? 'page' : undefined}><span aria-hidden="true">⌁</span>Carbon Flow</a>
-          <a href="/?page=scenario-analysis" className={page === 'scenario' ? 'active' : ''} aria-current={page === 'scenario' ? 'page' : undefined}><span aria-hidden="true">⌁</span>Scenario Analysis</a>
-          <a href="/?page=data-sources" className={page === 'sources' ? 'active' : ''} aria-current={page === 'sources' ? 'page' : undefined}><span aria-hidden="true">▤</span>Data &amp; Sources</a>
-          <a href="/?page=reports" className={page === 'reports' ? 'active' : ''} aria-current={page === 'reports' ? 'page' : undefined}><span aria-hidden="true">▧</span>Reports</a>
+          <a href={appBase} className={page === 'executive' ? 'active' : ''} aria-current={page === 'executive' ? 'page' : undefined}><span aria-hidden="true">▥</span>Executive Dashboard</a>
+          <a href={`${appBase}?page=process-monitoring`} className={page === 'monitoring' ? 'active' : ''} aria-current={page === 'monitoring' ? 'page' : undefined}><span aria-hidden="true">◫</span>Process Monitoring</a>
+          <a href={`${appBase}?page=carbon-flow`} className={page === 'carbon-flow' ? 'active' : ''} aria-current={page === 'carbon-flow' ? 'page' : undefined}><span aria-hidden="true">⌁</span>Carbon Flow</a>
+          <a href={`${appBase}?page=scenario-analysis`} className={page === 'scenario' ? 'active' : ''} aria-current={page === 'scenario' ? 'page' : undefined}><span aria-hidden="true">⌁</span>Scenario Analysis</a>
+          <a href={`${appBase}?page=data-sources`} className={page === 'sources' ? 'active' : ''} aria-current={page === 'sources' ? 'page' : undefined}><span aria-hidden="true">▤</span>Data &amp; Sources</a>
+          <a href={`${appBase}?page=reports`} className={page === 'reports' ? 'active' : ''} aria-current={page === 'reports' ? 'page' : undefined}><span aria-hidden="true">▧</span>Reports</a>
         </nav>
         <div className="sidebar-foot"><i /> SIMULATION PROTOTYPE</div>
       </aside>
