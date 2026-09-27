@@ -147,9 +147,91 @@ Before sharing a report, generate a snapshot and review the displayed source sta
 5. **Adsorbent evidence:** Literature properties shown for CS-TEPA-700 are reference information only. The model material is XS-TEPA-700; its assumed 4 mmol/g working capacity is not validated by those literature records.
 6. **Unavailable product intensity:** CO₂ intensity per tonne of product remains unavailable across the overview and carbon-flow views because product output is unspecified.
 
+## Calculation methodology and worked examples
+
+The following formulas are taken from the dashboard's simulation code. They explain how displayed estimates are calculated; they do not establish that the underlying engineering assumptions are validated for a real Malaysia facility. Unless marked otherwise, parameter values are prototype assumptions and outputs are simulated.
+
+### Feed CO₂ entering the modeled system
+
+For each simulation step:
+
+```text
+CO₂ input (kg) = flue-gas flow (Nm³/h)
+                 × CO₂ concentration (%) / 100
+                 × CO₂ density (kg/Nm³)
+                 × step duration (s) / 3,600
+```
+
+The registry uses 1.964 kg/Nm³ for CO₂ density. At the nominal 150,000 Nm³/h flow and 22% CO₂, that is approximately **64,812 kg CO₂/h**, or **1,555.5 t/day** before the small time-varying feed adjustments. Period totals are sums of the simulated time steps, so they need not equal a nominal-rate calculation exactly.
+
+### Adsorbent capacity, loading, and current-step capture
+
+The model's nominal CO₂ storage capacity is:
+
+```text
+Capacity (kg CO₂) = adsorbent mass (kg)
+                    × working capacity (mmol/g)
+                    × CO₂ molar mass (g/mol) / 1,000
+```
+
+With 1,000 kg adsorbent, the assumed 4 mmol/g working capacity, and the registry's 44.01 g/mol CO₂ molar mass, the configured capacity is **176.04 kg CO₂**. A displayed loading of 3.14 mmol/g therefore corresponds to `3.14 / 4 × 100 = 78.5%` of that configured capacity.
+
+For an adsorption step, the requested capture is the step's CO₂ input multiplied by a target capture efficiency that varies sinusoidally around 78.4%, then reduced by a loading penalty. The penalty is `1 − 0.65 × loadingFraction²` with the current assumption values. Actual captured CO₂ is capped by the adsorbent's remaining capacity:
+
+```text
+requested capture = step CO₂ input × target efficiency × loading penalty
+actual capture = min(requested capture, remaining adsorbent capacity)
+```
+
+The reported loading percentage is current loading divided by configured capacity. Current Process Monitoring capture efficiency is cumulative captured CO₂ divided by cumulative inlet CO₂ since that simulation state began. The 78.4% display is therefore a process-state estimate, not the same aggregation as the monthly value.
+
+### Period emissions, capture efficiency, and balance
+
+Scenario results aggregate simulated samples over the selected week, month, or year. Each sample's baseline emissions are its CO₂ input in kilograms divided by 1,000; treated emissions are the input minus captured CO₂. The period KPIs are:
+
+```text
+CO₂ remaining (t) = CO₂ input (t) − CO₂ captured (t)
+Period capture efficiency (%) = CO₂ captured (t) / CO₂ input (t) × 100
+Emission reduction (%) = (baseline emissions − treated emissions)
+                         / baseline emissions × 100
+```
+
+For the April 2026 figures in this report, `46,682.2 − 126.7 = 46,555.5 t` remaining. `126.7 / 46,682.2 × 100` is approximately **0.2715%**, displayed as **0.27%**. The dashboard's mass-balance check passes when input equals captured plus remaining within its numerical tolerance. Since this simplified boundary treats capture as the modeled emissions reduction, period capture efficiency and emission reduction are numerically the same here.
+
+### Energy and intensity
+
+The model accumulates four energy contributions by time step:
+
+```text
+Regeneration (kWh) = CO₂ desorbed (kg) × regeneration energy rate (kWh/kg CO₂)
+Gas handling (kWh) = flue-gas flow (Nm³/h) × gas-handling rate (kWh/Nm³) × step hours
+Cooling (kWh) = flow × max(inlet temperature − adsorption temperature, 0)
+                × cooling rate (kWh/Nm³/°C) × step hours
+Auxiliaries (kWh) = flow × auxiliary rate (kWh/Nm³) × step hours
+Total energy = regeneration + gas handling + cooling + auxiliaries
+Energy intensity (kWh/t CO₂) = total energy (MWh) × 1,000 / CO₂ captured (t)
+```
+
+The default assumed rates are 0.95 kWh/kg CO₂ for regeneration, 0.00015 kWh/Nm³ for gas handling, 0.00001 kWh/Nm³/°C for cooling, and 0.00003 kWh/Nm³ for auxiliaries. For the rounded April totals, `291.1 MWh × 1,000 / 126.7 t` is about **2,297.6 kWh/t CO₂**. The Executive page displays **2,290.3 kWh/t CO₂** in the reviewed snapshot, a small but visible discrepancy that merits reconciliation across the pages; the rounded Carbon Flow totals alone do not explain it.
+
+The energy-balance check compares total energy with the sum of the reported components, within a numerical tolerance. These are model estimates from assumed coefficients, not utility-meter readings.
+
+### Other calculated indicators and charts
+
+- **CO₂ captured per day** on the Executive Dashboard is selected-period captured tonnes divided by the number of days in that view.
+- **Data completeness** is the count of configured, valid required scenario inputs divided by the required-input count. The displayed 17/18 is rounded to 94%; product output is missing, which is why product-specific CO₂ intensity is unavailable.
+- **Tree-year equivalent** is captured kilograms divided by the assumed kilograms of CO₂ absorbed by one tree per year. **Car-year equivalent** is captured tonnes divided by the assumed tonnes emitted by one car per year. Both are illustrative comparisons, not physical outcomes.
+- **Scenario trend lines** use the simulated time-series samples. The inlet and target-capture values vary with configured sine-wave periods and amplitudes; the chart is generated from those model samples rather than observed historical data.
+- **Sankey ribbon widths** are scaled by captured/input CO₂ fractions. The flow quantities are the period totals above, and the rendered diagram is a visualization of the mass balance rather than a separate calculation.
+- **Carbon intensity per product** would require a product-output value and compatible production period. It is intentionally unavailable while that input is unspecified.
+
+### Interpretation limits
+
+The simulation includes a bounded adsorbent capacity, adsorption and regeneration phases, time-varying feed conditions, and assumed energy coefficients. The dashboard does not model a full plant-wide process design or verify the assumptions against site operations. Literature records shown in the dashboard are background references for CS-TEPA-700; they do not validate the model's XS-TEPA-700 identity or its assumed 4 mmol/g working capacity. Treat calculated values as prototype scenario estimates until inputs, boundaries, and coefficients have been validated for a specific Malaysian deployment.
+
 ## Recommended next improvements
 
-1. Clarify that Process Monitoring’s 78.4% figure is a current-step estimate and show how it differs from the 0.27% period-level metric.
+1. Clarify that Process Monitoring’s 78.4% figure is cumulative for its current simulated process state, while 0.27% is aggregated for the selected reporting period; explain the different denominators/time windows beside both values.
 2. Make the inlet and treated-gas measurement panels more discoverable, since they currently require selecting their viewer labels.
 3. Add a short “Run a scenario to see results” cue or a sample result state to Scenario Analysis for first-time visitors.
 4. On Reports, make the required **Generate Report** step prominent before the contents and PDF controls, and show snapshot provenance beside the generated timestamp.
