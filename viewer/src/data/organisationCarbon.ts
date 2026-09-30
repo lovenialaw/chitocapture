@@ -1,11 +1,8 @@
 import type { ActivityCalculation, ActivityData, CarbonTarget, EmissionCategory, EmissionFactor, FactorGas, GwpSet, OrganisationCarbonState, ScopeClassification, Site, SourceRecord, CalculationRecord } from '../types/organisationCarbon'
+import demoOrganisationCarbonData from './demoOrganisationCarbon.json'
 
 const STORAGE_KEY = 'chitocapture.organisation-carbon.v1'
-const initial: OrganisationCarbonState = {
-  organisations: [{ organisationId: 'org-sample', organisationName: 'Sample Company' }],
-  sites: [{ siteId: 'site-malaysia-sample', organisationId: 'org-sample', siteName: 'Malaysia (Sample Plant)', location: 'Malaysia' }],
-  activities: [], factors: [], gwpSets: [], sources: [], inventory: [], targets: [],
-}
+const initial = demoOrganisationCarbonData as OrganisationCarbonState
 let state = readState()
 let revision = 0
 const listeners = new Set<() => void>()
@@ -14,6 +11,13 @@ function readState(): OrganisationCarbonState {
     const saved = localStorage.getItem(STORAGE_KEY)
     if (saved) {
       const parsed = JSON.parse(saved) as Partial<OrganisationCarbonState>
+      // Visitors who already have an empty prototype registry should also see
+      // the shared preview data; any populated browser-local registry remains authoritative.
+      const hasSavedRecords = (parsed.activities?.length ?? 0) > 0
+        || (parsed.inventory?.length ?? 0) > 0
+        || (parsed.factors?.length ?? 0) > 0
+        || (parsed.gwpSets?.length ?? 0) > 0
+      if (!hasSavedRecords) return structuredClone(initial)
       const factors = Array.isArray(parsed.factors) ? parsed.factors.map((raw) => {
         // Earlier calculator versions stored the gas as `gas` or omitted it.
         // Normalize those records on load so old browser data remains usable.
@@ -73,7 +77,7 @@ function readState(): OrganisationCarbonState {
         })) : [],
       }
     }
-  } catch { /* Keep an empty usable in-memory registry when storage is unavailable. */ }
+  } catch { /* Fall back to the bundled shared demo registry when storage is unavailable. */ }
   return structuredClone(initial)
 }
 function commit(next: OrganisationCarbonState) {

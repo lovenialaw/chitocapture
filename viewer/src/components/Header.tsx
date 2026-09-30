@@ -31,7 +31,7 @@ function Header({ timestamp, page = 'monitoring', title, subtitle }: HeaderProps
             <a href={`${appBase}?page=reports`} className={page === 'reports' ? 'active' : ''} aria-current={page === 'reports' ? 'page' : undefined}><span aria-hidden="true">▧</span>Reports</a>
           </div>
         </nav>
-        <div className="sidebar-foot"><i /> Simulation Prototype</div>
+        <div className="sidebar-foot"><i /> Simulation Prototype · Demo data</div>
       </aside>
       <div className="page-heading">
         <h1>{title ?? 'Process Monitoring'}</h1>
