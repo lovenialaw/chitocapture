@@ -5,7 +5,7 @@ export type ParameterCategory =
   | 'SIMULATION CONFIGURATION'
   | 'PHYSICAL CONSTANTS'
 
-export type ParameterSourceType = 'literature' | 'assumption' | 'simulated'
+export type ParameterSourceType = 'literature' | 'company-data' | 'assumption' | 'simulated'
 export type ParameterStatus = 'active' | 'needs-verification' | 'prototype'
 export type ParameterValue = string | number
 
@@ -17,6 +17,14 @@ export type ModelParameter = {
   category: ParameterCategory
   sourceType: ParameterSourceType
   sourceId: string
+  sourceTitle?: string
+  sourcePublisher?: string
+  sourceYear?: number | null
+  sourceUrl?: string
+  sourceDetails?: string
+  measurementPeriod?: string
+  notes?: string
+  updatedAt?: string
   editable: boolean
   status: ParameterStatus
 }
@@ -29,5 +37,6 @@ export type DataSource = {
   year: number | null
   reference: string
   url?: string
+  verificationStatus?: 'verified' | 'needs-verification'
   notes: string
 }

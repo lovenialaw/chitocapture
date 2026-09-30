@@ -1,5 +1,8 @@
 import type { ReportSnapshot } from './reportSnapshot'
 import { formatMalaysiaDateTime } from '../utils/malaysiaTime'
+import type { BusinessReportSnapshot } from './businessReportSnapshot'
+import type { PreviewPage, ReportChart } from './businessReportContent'
+import { getBusinessReportMetrics } from './businessReportSnapshot'
 
 const PAGE_W = 595
 const PAGE_H = 842
@@ -16,7 +19,7 @@ const fmt = (n: number | null | undefined, digits = 1) => typeof n === 'number' 
 class PdfDocument {
   pages: Array<{ commands: string[]; y: number }> = []
   tocPageNumbers = new Map<string, number>()
-  constructor(private reportId: string) { this.newPage() }
+  constructor(private reportId: string, private numberCover = false) { this.newPage() }
   get page() { return this.pages[this.pages.length - 1] }
   get pageNumber() { return this.pages.length }
   newPage() { this.pages.push({ commands: [], y: 786 }); return this.page }
@@ -88,7 +91,7 @@ class PdfDocument {
     const pageIds = this.pages.map((_, i) => 5 + i * 2)
     objects[1] = `<< /Type /Pages /Kids [${pageIds.map((id) => `${id} 0 R`).join(' ')}] /Count ${this.pages.length} >>`
     this.pages.forEach((page, index) => {
-      if (index > 0) {
+      if (index > 0 || this.numberCover) {
         page.commands.push(`0.48 0.55 0.58 rg BT /F1 7 Tf 48 31 Td (${esc(this.reportId)}) Tj ET`)
         page.commands.push(`0.48 0.55 0.58 rg BT /F1 7 Tf 510 31 Td (${index + 1} / ${this.pages.length}) Tj ET`)
         page.commands.push(`0.8 0.84 0.85 RG 0.4 w 48 46 m 547 46 l S`)
@@ -321,4 +324,182 @@ export function createReportPdf(report: ReportSnapshot): Blob {
   for (const title of sectionTitles) { const target = doc.tocPageNumbers.get(title) ?? ''; tocText(title, 58, 8); tocText(String(target), 520, 8, true); tocLine() }
   for (const title of ['Appendix A - Complete Parameter Registry', 'Appendix B - Source Register', 'Appendix C - Simulation Configuration', 'Appendix D - Calculation Definitions', 'Appendix E - Data Completeness', 'Appendix F - Validation Checklist']) { const target = doc.tocPageNumbers.get(title) ?? ''; tocText(title, 58, 7); tocText(String(target), 520, 7, true); tocPage.y -= 19 }
   return doc.finish()
+}
+
+function businessBarChart(doc: PdfDocument, chart: ReportChart) {
+  const rows = chart.rows.filter((row) => Number.isFinite(row.value) && row.value >= 0)
+  if (!rows.length) { doc.subheading(chart.title); doc.paragraph('No data available for this chart.'); return }
+  const rowHeight = rows.length > 10 ? 17 : 21
+  const height = rows.length * rowHeight + 50
+  doc.ensure(height)
+  doc.subheading(chart.title)
+  doc.text(`Emissions / values (${chart.unit})`, 48, 7, false, MUTED)
+  const top = doc.page.y - 11
+  const labelX = 48, barX = 205, barWidth = 267, valueX = 480
+  const maximum = Math.max(1e-12, ...rows.map((row) => row.value))
+  rows.forEach((row, index) => {
+    const y = top - (index + 1) * rowHeight
+    doc.text(row.label, labelX, 7, false, INK, y + 2)
+    doc.rect(barX, y, barWidth, 8, '0.94 0.96 0.95')
+    if (row.value > 0) doc.rect(barX, y, Math.max(1, barWidth * row.value / maximum), 8, GREEN)
+    doc.text(`${fmt(row.value, row.value < 1 ? 3 : 2)} ${chart.unit}`, valueX, 7, true, NAVY, y + 1)
+    if (row.share != null) doc.text(`${fmt(row.share, 1)}%`, valueX, 6, false, MUTED, y - 8)
+    doc.line(48, y - 4, 547, y - 4, GRID, 0.25)
+  })
+  doc.page.y = top - rows.length * rowHeight - 15
+}
+
+function businessLineChart(doc: PdfDocument, chart: ReportChart) {
+  const rows = chart.rows.filter((row) => Number.isFinite(row.value))
+  doc.ensure(225); doc.subheading(chart.title)
+  if (rows.length < 2) { doc.paragraph('Historical trend unavailable for the selected reporting period.'); return }
+  doc.paragraph(`Actual saved reporting periods · ${chart.unit}`, 7, MUTED)
+  const top = doc.page.y - 8, height = 120, left = 78, right = 525, base = top - height
+  const max = Math.max(1e-9, ...rows.map((row) => row.value))
+  doc.line(left, base, right, base, MUTED, 0.5); doc.line(left, base, left, top, MUTED, 0.5)
+  for (let i = 0; i <= 4; i++) { const y = base + height * i / 4; doc.line(left, y, right, y, '0.9 0.92 0.91', 0.3); doc.text(fmt(max * i / 4, max < 10 ? 2 : 0), 48, 6, false, MUTED, y - 2) }
+  rows.forEach((row, index) => {
+    const x = left + (right - left) * index / (rows.length - 1)
+    const y = base + height * row.value / max
+    if (index > 0) {
+      const prior = rows[index - 1]
+      const px = left + (right - left) * (index - 1) / (rows.length - 1)
+      const py = base + height * prior.value / max
+      doc.raw(`${GREEN} RG 1.6 w ${px} ${py} m ${x} ${y} l S`)
+    }
+    doc.rect(x - 2, y - 2, 4, 4, GREEN)
+    if (rows.length <= 12 || index % Math.ceil(rows.length / 12) === 0) doc.text(row.label, x - 12, 6, false, MUTED, base - 13)
+  })
+  doc.text(chart.unit, 48, 6, false, MUTED, top + 3)
+  doc.page.y = base - 29
+}
+
+function businessFlow(doc: PdfDocument, chart: ReportChart) {
+  const rows = chart.rows
+  const input = rows.find((row) => row.label === 'Input')?.value ?? 0
+  const captured = rows.find((row) => row.label === 'Captured')?.value ?? 0
+  const remaining = rows.find((row) => row.label === 'Remaining')?.value ?? 0
+  doc.ensure(142); doc.subheading(chart.title)
+  doc.paragraph(`CO2 input = CO2 captured + CO2 remaining · ${chart.unit}`, 7, MUTED)
+  const x = 70, y = doc.page.y - 74, width = 450, height = 25
+  doc.rect(x, y, width, height, '0.94 0.96 0.95')
+  if (input > 0) {
+    const capW = width * captured / input
+    doc.rect(x, y, capW, height, GREEN)
+    doc.rect(x + capW, y, Math.max(0, width - capW), height, '0.38 0.52 0.57')
+  }
+  doc.rect(x, y, width, height, '0 0 0', GRID)
+  doc.rect(74, y - 31, 8, 8, GREEN); doc.text(`Captured ${fmt(captured)} ${chart.unit}`, 87, 7, false, INK, y - 29)
+  doc.rect(282, y - 31, 8, 8, '0.38 0.52 0.57'); doc.text(`Remaining ${fmt(remaining)} ${chart.unit}`, 295, 7, false, INK, y - 29)
+  doc.text(`Input: ${fmt(input)} ${chart.unit}`, x, 8, true, NAVY, y + 37)
+  doc.page.y = y - 48
+}
+
+function businessProgress(doc: PdfDocument, chart: ReportChart) {
+  const rows = chart.rows
+  const max = Math.max(1e-12, ...rows.map((row) => row.value))
+  doc.ensure(rows.length * 37 + 60); doc.subheading(chart.title)
+  rows.forEach((row, index) => {
+    const y = doc.page.y - 18
+    doc.text(row.label, 48, 8, false, INK, y + 2)
+    doc.rect(220, y, 255, 10, '0.94 0.96 0.95')
+    doc.rect(220, y, 255 * row.value / max, 10, index === 2 ? '0.38 0.52 0.57' : GREEN)
+    doc.text(`${fmt(row.value)} ${chart.unit}`, 484, 8, true, NAVY, y + 1)
+    doc.page.y = y - 19
+  })
+}
+
+function drawBusinessChart(doc: PdfDocument, chart: ReportChart) {
+  if (chart.kind === 'line') businessLineChart(doc, chart)
+  else if (chart.kind === 'flow') businessFlow(doc, chart)
+  else if (chart.kind === 'progress') businessProgress(doc, chart)
+  else businessBarChart(doc, chart)
+}
+
+function drawKpis(doc: PdfDocument, rows: NonNullable<PreviewPage['kpis']>) {
+  if (!rows.length) return
+  const columns = 2, gap = 8, cardW = (499 - gap) / columns, cardH = 49
+  doc.ensure(Math.ceil(rows.length / columns) * (cardH + 7) + 22)
+  doc.subheading('Key performance indicators')
+  for (let index = 0; index < rows.length; index++) {
+    const column = index % columns, line = Math.floor(index / columns)
+    const x = 48 + column * (cardW + gap), y = doc.page.y - (line + 1) * (cardH + 7)
+    doc.rect(x, y, cardW, cardH, PAPER, GRID)
+    doc.text(rows[index].label, x + 9, 7, false, MUTED, y + 34)
+    doc.text(rows[index].value, x + 9, 11, true, NAVY, y + 17)
+    if (rows[index].detail) doc.text(rows[index].detail!, x + 9, 6, false, MUTED, y + 6)
+  }
+  doc.page.y -= Math.ceil(rows.length / columns) * (cardH + 7) + 10
+}
+
+function drawBusinessTable(doc: PdfDocument, table: NonNullable<PreviewPage['tables']>[number]) {
+  doc.subheading(table.title)
+  const count = table.headers.length
+  const available = 499
+  const preferred = count === 2 ? [210, 289] : count === 3 ? [155, 150, 194] : count === 4 ? [90, 140, 120, 149] : Array.from({ length: count }, () => available / count)
+  const widths = preferred.length === count ? preferred : Array.from({ length: count }, () => available / count)
+  const fontSize = count > 7 ? 5.3 : count > 5 ? 6.2 : 7
+  doc.table(table.headers, table.rows, widths, fontSize)
+}
+
+export type BusinessReportPdfArtifact = { blob: Blob; pageCount: number; sectionPages: Record<string, number> }
+
+/** Builds a vector PDF from the same frozen report snapshot and preview sections. */
+export function createBusinessReportArtifact(snapshot: BusinessReportSnapshot, pages: PreviewPage[]): BusinessReportPdfArtifact {
+  const doc = new PdfDocument(snapshot.reportId, true)
+  const metrics = getBusinessReportMetrics(snapshot)
+  const reportLabel: Record<BusinessReportSnapshot['reportType'], string> = {
+    'monthly-performance': 'Monthly Carbon Performance', 'annual-inventory': 'Annual GHG Inventory',
+    hotspots: 'Emission Hotspots & Actions', capture: 'Carbon Capture Operations',
+    targets: 'Targets & Progress', 'data-quality': 'Data Quality & Sources',
+  }
+  const siteName = snapshot.reportType === 'capture' ? snapshot.captureScenario?.snapshot.site ?? 'Scenario site unavailable' : snapshot.site?.siteName ?? 'All Sites'
+  doc.rect(0, 596, PAGE_W, 246, NAVY); doc.rect(47, 756, 40, 40, GREEN); doc.text('C', 60, 18, true, '1 1 1', 768)
+  // Simple vector carbon motif: rings are decorative only, not data marks.
+  const circle = (cx: number, cy: number, radius: number, color: string, width: number) => {
+    const k = radius * 0.55228475
+    doc.raw(`${color} RG ${width} w ${cx + radius} ${cy} m ${cx + radius} ${cy + k} ${cx + k} ${cy + radius} ${cx} ${cy + radius} c ${cx - k} ${cy + radius} ${cx - radius} ${cy + k} ${cx - radius} ${cy} c ${cx - radius} ${cy - k} ${cx - k} ${cy - radius} ${cx} ${cy - radius} c ${cx + k} ${cy - radius} ${cx + radius} ${cy - k} ${cx + radius} ${cy} c S`)
+  }
+  circle(505, 720, 27, GREEN, 4)
+  circle(505, 720, 43, '0.55 0.78 0.68', 1.2)
+  doc.text('CHITOCAPTURE', 48, 16, true, '1 1 1', 704)
+  doc.text('CARBON MANAGEMENT', 48, 10, true, '0.66 0.83 0.76', 671)
+  const titleLines = wrap(`${reportLabel[snapshot.reportType]} Report`, 33)
+  titleLines.forEach((line, index) => doc.text(line.toUpperCase(), 48, 21, true, '1 1 1', 628 - index * 27))
+  const periodY = 628 - titleLines.length * 27 - 2
+  doc.text(snapshot.period.label, 48, 15, true, '0.85 0.92 0.89', periodY)
+  doc.page.y = 560
+  doc.labelValue('Organisation', snapshot.organisation.organisationName)
+  doc.labelValue('Site', siteName)
+  doc.labelValue('Reporting period', `${snapshot.period.start} to ${snapshot.period.end}`)
+  doc.labelValue('Generated (MYT)', formatMalaysiaDateTime(snapshot.generatedAt))
+  doc.labelValue('Report ID', snapshot.reportId)
+  doc.labelValue('Data status', snapshot.reportType === 'capture' ? 'SIMULATED CAPTURE PERFORMANCE' : 'SAVED INVENTORY DATA')
+  doc.page.y -= 10
+  const coverKpis = pages[0]?.kpis?.slice(0, 4) ?? []
+  if (coverKpis.length) drawKpis(doc, coverKpis)
+  doc.paragraph(snapshot.reportType === 'capture' ? 'Capture outputs are simulation results and are not measured plant performance.' : 'This report includes saved organisational inventory data for the selected boundary. Capture results, if included, remain separate from organisational emissions.', 8, MUTED)
+
+  const sectionPages: Record<string, number> = {}
+  for (const page of pages) {
+    doc.section(page.title); doc.heading(page.title, true)
+    sectionPages[page.id] = doc.pageNumber
+    if (page.subtitle) doc.paragraph(page.subtitle, 8, MUTED)
+    if (page.empty) doc.paragraph(page.empty, 9, MUTED)
+    drawKpis(doc, page.kpis ?? [])
+    for (const chart of page.charts ?? []) drawBusinessChart(doc, chart)
+    for (const table of page.tables ?? []) drawBusinessTable(doc, table)
+    for (const note of page.notes ?? []) doc.paragraph(note, 8, MUTED)
+    if (page.id === 'data-quality-sources') {
+      doc.subheading('Capture input provenance')
+      const provenance = Object.entries(metrics.provenanceCounts).map(([label, value]) => [label, String(value)])
+      if (provenance.length) doc.table(['Provenance', 'Registered inputs'], provenance, [250, 249], 7)
+    }
+  }
+  const pageCount = doc.pageNumber
+  return { blob: doc.finish(), pageCount, sectionPages }
+}
+
+export function createBusinessReportPdf(snapshot: BusinessReportSnapshot, pages: PreviewPage[]): Blob {
+  return createBusinessReportArtifact(snapshot, pages).blob
 }

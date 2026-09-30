@@ -2,12 +2,13 @@ import { useState, useSyncExternalStore } from 'react'
 import type { FormEvent, ReactNode } from 'react'
 import Header from '../components/Header'
 import SourceDetailsDialog from '../components/SourceDetailsDialog'
-import { getAllParameters, getParameter, getParameterRevision, subscribeToParameters } from '../data/parameters'
+import { getAllParameters, getParameter, getParameterRevision, readNumberParameter, subscribeToParameters } from '../data/parameters'
 import { sourceTypeLabel } from '../data/sources'
 import { runScenario } from '../simulation/scenarioRunner'
 import type { ScenarioPeriod, ScenarioResult, ScenarioSnapshot } from '../simulation/scenarioRunner'
 import { getActiveScenarioResult, setActiveScenarioResult } from '../simulation/activeScenario'
 import { scenarioValidationRules, validateScenarioDrafts } from '../simulation/scenarioValidation'
+import { readHotspotScenarioContext } from '../data/reductionRecommendationLibrary'
 import type { ParameterSourceType } from '../types/parameters'
 
 type Drafts = Record<string, string>
@@ -70,22 +71,27 @@ function Badge({ sourceType }: { sourceType: ParameterSourceType }) {
   return <span className={`scenario-status ${sourceType}`}>{sourceTypeLabel(sourceType)}</span>
 }
 
-function ParameterInput({ id, label, unit, drafts, errors, onChange }: {
-  id: string; label: string; unit: string; drafts: Drafts; errors: Record<string, string>; onChange: (id: string, value: string) => void
+function ParameterInput({ id, label, unit, drafts, errors, onChange, disabled = false }: {
+  id: string; label: string; unit: string; drafts: Drafts; errors: Record<string, string>; onChange: (id: string, value: string) => void; disabled?: boolean
 }) {
   const parameter = getParameter(id)
+  const registeredValue = parameter?.value
+  const draftValue = Number(drafts[id]) * (id === 'cycle-duration' || id === 'regeneration-time' ? 60 : 1)
+  const isScenarioAssumption = Boolean(drafts[id]?.trim()) && parameter && Number.isFinite(draftValue) && typeof registeredValue === 'number' && draftValue !== registeredValue
   const error = errors[id]
   const rule = scenarioValidationRules[id]
   return <label className={`scenario-field${error ? ' has-error' : ''}`}>
-    <span className="scenario-field-label">{label}<Badge sourceType={parameter?.sourceType ?? 'assumption'} /></span>
-    <span className="scenario-input-wrap"><input type="number" inputMode="decimal" step="any" min={rule?.min} max={rule?.max} value={drafts[id] ?? ''} aria-invalid={Boolean(error)} aria-describedby={error ? `${id}-error` : undefined} onChange={(event) => onChange(id, event.target.value)} /><small>{unit}</small></span>
+    <span className="scenario-field-label">{label}{isScenarioAssumption ? <span className="scenario-status assumption" title="Temporary what-if value; the registered value remains unchanged">Scenario Assumption</span> : <Badge sourceType={parameter?.sourceType ?? 'assumption'} />}</span>
+    <span className="scenario-input-wrap"><input type="number" inputMode="decimal" step="any" min={rule?.min} max={rule?.max} value={drafts[id] ?? ''} aria-invalid={Boolean(error)} aria-describedby={error ? `${id}-error` : undefined} onChange={(event) => onChange(id, event.target.value)} disabled={disabled} /><small>{unit}</small></span>
+    {isScenarioAssumption && <a className="scenario-register-link" href={`${import.meta.env.BASE_URL}?page=data-sources&registerParameterId=${encodeURIComponent(id)}&registerValue=${encodeURIComponent(drafts[id])}#capture-parameters`}>Save as registered parameter →</a>}
     {error && <span className="scenario-error" id={`${id}-error`}>{error || rule?.message}</span>}
   </label>
 }
 
 function SourceSelect({ id, label, drafts, onChange }: { id: keyof typeof sourceOptions; label: string; drafts: Drafts; onChange: (id: string, value: string) => void }) {
   const parameter = getParameter(id)
-  return <label className="scenario-field"><span className="scenario-field-label">{label}<Badge sourceType={parameter?.sourceType ?? 'assumption'} /></span><select value={drafts[id] ?? ''} onChange={(event) => onChange(id, event.target.value)}>{sourceOptions[id].map((option) => <option key={option} value={option}>{option}</option>)}{drafts[id] && !sourceOptions[id].includes(drafts[id]) && <option value={drafts[id]}>{drafts[id]}</option>}</select></label>
+  const isScenarioAssumption = parameter && drafts[id] !== String(parameter.value)
+  return <label className="scenario-field"><span className="scenario-field-label">{label}{isScenarioAssumption ? <span className="scenario-status assumption" title="Temporary what-if value; the registered value remains unchanged">Scenario Assumption</span> : <Badge sourceType={parameter?.sourceType ?? 'assumption'} />}</span><select value={drafts[id] ?? ''} onChange={(event) => onChange(id, event.target.value)}>{sourceOptions[id].map((option) => <option key={option} value={option}>{option}</option>)}{drafts[id] && !sourceOptions[id].includes(drafts[id]) && <option value={drafts[id]}>{drafts[id]}</option>}</select>{isScenarioAssumption && <a className="scenario-register-link" href={`${import.meta.env.BASE_URL}?page=data-sources&registerParameterId=${encodeURIComponent(id)}&registerValue=${encodeURIComponent(drafts[id])}#capture-parameters`}>Save as registered parameter →</a>}</label>
 }
 
 function SectionTitle({ number, title, action }: { number: number; title: string; action?: ReactNode }) {
@@ -133,7 +139,35 @@ function ChartCard({ title, kind, result }: { title: string; kind: 'emissions' |
   </article>
 }
 
-function makeSnapshot(drafts: Drafts): ScenarioSnapshot {
+function daysInReportingMonth(period: string | undefined) {
+  const match = period?.match(/^(\d{4})-(\d{2})$/)
+  return match ? new Date(Number(match[1]), Number(match[2]), 0).getDate() : undefined
+}
+
+function estimateFeedFlowRate(co2Tonnes: number, co2Concentration: number, days: number) {
+  const density = readNumberParameter('co2-density')
+  const co2Fraction = co2Concentration / 100
+  if (co2Tonnes <= 0 || co2Fraction <= 0 || density <= 0 || days <= 0) return 0
+  return co2Tonnes * 1_000 / (days * 24 * co2Fraction * density)
+}
+
+function initialDraftsFromHotspot(context: ReturnType<typeof readHotspotScenarioContext>): Drafts {
+  const drafts = formattedInitialDrafts()
+  if (!context) return drafts
+  if (context.industry !== 'Industry not provided') drafts.industry = context.industry
+  if (context.source !== 'Source not provided') drafts['emission-source'] = context.source
+  if (context.site !== 'Site unavailable') drafts.site = context.site
+  if (context.inventoryCanDriveBaseline && context.inventoryEmissionsTCO2e && context.inventoryPeriod) {
+    const concentration = context.inventoryCO2Concentration ?? Number(drafts['feed-co2-concentration'])
+    const days = daysInReportingMonth(context.inventoryPeriod) ?? 30
+    drafts['feed-co2-concentration'] = String(concentration)
+    drafts['feed-flow-rate'] = String(estimateFeedFlowRate(context.inventoryEmissionsTCO2e, concentration, days))
+  }
+  return drafts
+}
+
+function makeSnapshot(drafts: Drafts, hotspotContext: ReturnType<typeof readHotspotScenarioContext>, linkInventoryBaseline: boolean): ScenarioSnapshot {
+  const inventoryPeriodDays = linkInventoryBaseline && hotspotContext ? daysInReportingMonth(hotspotContext.inventoryPeriod) : undefined
   return {
     industry: drafts.industry,
     emissionSource: drafts['emission-source'],
@@ -152,25 +186,40 @@ function makeSnapshot(drafts: Drafts): ScenarioSnapshot {
     regenerationTemperature: Number(drafts['regeneration-temperature']),
     cycleDurationHours: Number(drafts['cycle-duration']),
     regenerationTimeHours: Number(drafts['regeneration-time']),
+    ...(linkInventoryBaseline && hotspotContext?.inventoryCanDriveBaseline && hotspotContext.inventoryEmissionsTCO2e !== undefined
+      ? { inventoryBaselineCo2Tonnes: hotspotContext.inventoryEmissionsTCO2e, inventoryPeriodDays }
+      : {}),
   }
 }
 
 function ScenarioAnalysisPage() {
+  const hotspotContext = readHotspotScenarioContext(window.location.search)
   useSyncExternalStore(subscribeToParameters, getParameterRevision, getParameterRevision)
-  const [drafts, setDrafts] = useState<Drafts>(() => {
-    const active = getActiveScenarioResult()
-    return active ? draftsFromSnapshot(active.snapshot) : formattedInitialDrafts()
-  })
+  const [drafts, setDrafts] = useState<Drafts>(() => initialDraftsFromHotspot(hotspotContext))
+  const [inventoryLinkEnabled, setInventoryLinkEnabled] = useState(() => Boolean(hotspotContext?.inventoryCanDriveBaseline))
   const [errors, setErrors] = useState<Record<string, string>>({})
-  const [period, setPeriod] = useState<ScenarioPeriod>(() => getActiveScenarioResult()?.period ?? 'monthly')
-  const [result, setResult] = useState<ScenarioResult | null>(() => getActiveScenarioResult())
+  const [period, setPeriod] = useState<ScenarioPeriod>(() => hotspotContext ? 'monthly' : getActiveScenarioResult()?.period ?? 'monthly')
+  const [result, setResult] = useState<ScenarioResult | null>(() => hotspotContext ? null : getActiveScenarioResult())
   const [sourceOpen, setSourceOpen] = useState(false)
   const [running, setRunning] = useState(false)
-  const [dirty, setDirty] = useState(false)
+  const [dirty, setDirty] = useState(() => {
+    if (hotspotContext) return false
+    const active = getActiveScenarioResult()
+    if (!active) return false
+    const registered = formattedInitialDrafts()
+    return Object.entries(draftsFromSnapshot(active.snapshot)).some(([id, value]) => registered[id] !== value)
+  })
   const [runError, setRunError] = useState('')
 
   function changeDraft(id: string, value: string) {
-    setDrafts((current) => ({ ...current, [id]: value }))
+    setDrafts((current) => {
+      const next = { ...current, [id]: value }
+      if (id === 'feed-co2-concentration' && inventoryLinkEnabled && hotspotContext?.inventoryEmissionsTCO2e && hotspotContext.inventoryPeriod) {
+        const days = daysInReportingMonth(hotspotContext.inventoryPeriod) ?? 30
+        next['feed-flow-rate'] = String(estimateFeedFlowRate(hotspotContext.inventoryEmissionsTCO2e, Number(value), days))
+      }
+      return next
+    })
     setDirty(true)
   }
 
@@ -178,8 +227,9 @@ function ScenarioAnalysisPage() {
     setRunning(true)
     await new Promise((resolve) => window.setTimeout(resolve, 16))
     try {
-      const nextResult = runScenario(snapshot, selectedPeriod)
+      const nextResult = runScenario({ ...snapshot, scenarioId: crypto.randomUUID(), runTimestamp: new Date().toISOString() }, selectedPeriod)
       setResult(nextResult)
+      if (inventoryLinkEnabled && hotspotContext?.inventoryCanDriveBaseline) setDrafts(draftsFromSnapshot(nextResult.snapshot))
       setActiveScenarioResult(nextResult)
       setDirty(false)
       setRunError('')
@@ -195,7 +245,7 @@ function ScenarioAnalysisPage() {
     const nextErrors = validateScenarioDrafts(drafts)
     setErrors(nextErrors)
     if (Object.keys(nextErrors).length > 0) return
-    await runWithSnapshot(makeSnapshot(drafts), period)
+    await runWithSnapshot(makeSnapshot(drafts, hotspotContext, inventoryLinkEnabled), period)
   }
 
   async function changePeriod(value: ScenarioPeriod) {
@@ -207,8 +257,9 @@ function ScenarioAnalysisPage() {
   const sourceStatus = (id: string): ParameterSourceType => getParameter(id)?.sourceType ?? 'assumption'
 
   return <div className="dashboard-shell scenario-page">
-    <Header page="scenario" title="Scenario Analysis" subtitle="Configure input parameters and run simulations" />
+    <Header page="scenario-analysis" title="Scenario Analysis" subtitle="Configure input parameters and run simulations" />
     <main className="dashboard-main scenario-main">
+      {hotspotContext && <aside className="hotspot-scenario-context"><strong>Evaluating capture potential for: {hotspotContext.source} — {hotspotContext.site}</strong><span>Organisation: {hotspotContext.organisation} · Industry: {hotspotContext.industry} · Category: {hotspotContext.category}</span>{hotspotContext.inventoryEmissionsTCO2e !== undefined && <span><b>{hotspotContext.inventoryCanDriveBaseline ? 'Linked monthly inventory baseline:' : 'Saved inventory reference:'}</b> {formatNumber(hotspotContext.inventoryEmissionsTCO2e, 2)} tCO₂e · {hotspotContext.inventoryPeriod || 'selected reporting period'}{hotspotContext.inventoryRecordCount !== undefined ? ` · ${hotspotContext.inventoryRecordCount} saved record${hotspotContext.inventoryRecordCount === 1 ? '' : 's'}` : ''}</span>}{hotspotContext.inventoryCanDriveBaseline && <label className="scenario-inventory-link"><input type="checkbox" checked={inventoryLinkEnabled} onChange={(event) => { setInventoryLinkEnabled(event.target.checked); setDirty(true) }}/> Reconcile scenario CO₂ input to this month&apos;s direct-CO₂ inventory total</label>}<span>Configure the source&apos;s flue-gas and capture-system conditions before running the simulation.</span><small>{inventoryLinkEnabled && hotspotContext.inventoryCanDriveBaseline ? `The starting flow is derived from the inventory total and ${formatNumber(Number(drafts['feed-co2-concentration']), 2)}% CO₂ concentration${hotspotContext.inventoryCO2Concentration === undefined ? ' (the current model assumption)' : ' (source-provided)'}. The flow input is locked while linked; turn off reconciliation to run a separate what-if case.` : hotspotContext.inventoryCanDriveBaseline ? 'Reconciliation is off. The inventory value remains a reference only; scenario inputs and outputs are independent.' : 'This inventory selection spans multiple periods or includes non-CO₂e gases. It is shown for context only and is not used as a process-model input.'}</small></aside>}
       <form className="scenario-form" onSubmit={submitScenario} noValidate>
         <section className="scenario-section panel">
           <SectionTitle number={1} title="Emission Source" />
@@ -222,7 +273,7 @@ function ScenarioAnalysisPage() {
         <section className="scenario-section panel">
           <SectionTitle number={2} title="Feed Gas Conditions (at source)" />
           <div className="scenario-input-grid">
-            {numericFields.slice(0, 8).map((field) => <ParameterInput key={field.id} {...field} drafts={drafts} errors={errors} onChange={changeDraft} />)}
+            {numericFields.slice(0, 8).map((field) => <ParameterInput key={field.id} {...field} drafts={drafts} errors={errors} onChange={changeDraft} disabled={field.id === 'feed-flow-rate' && inventoryLinkEnabled} />)}
           </div>
         </section>
 
@@ -236,13 +287,13 @@ function ScenarioAnalysisPage() {
 
         {runError && <div className="scenario-run-error" role="alert">{runError}</div>}
         <section className="scenario-run-section">
-          <div><SectionTitle number={4} title="Run Simulation" /><p>Run the existing process model with this scenario snapshot.</p></div>
-          <button className="scenario-run-button" type="submit" disabled={running}>{running ? 'Calculating…' : 'Run and Analyse Scenario'}<span>→</span></button>
+          <div><SectionTitle number={4} title="Run Simulation" /><p>Run the process model with a temporary scenario snapshot. To permanently change an input, register its value and provenance in Data &amp; Sources.</p></div>
+          <div className="scenario-run-actions"><button type="button" className="scenario-reset-button" onClick={() => { setDrafts(formattedInitialDrafts()); setErrors({}); setDirty(true) }}>Reset to registered values</button><button className="scenario-run-button" type="submit" disabled={running}>{running ? 'Calculating…' : 'Run and Analyse Scenario'}<span>→</span></button></div>
         </section>
       </form>
 
       <section className="scenario-results" aria-live="polite">
-        <div className="scenario-results-heading"><div><SectionTitle number={5} title="Scenario Results" /><p>{result ? `${result.snapshot.industry} · ${result.snapshot.emissionSource} · ${result.snapshot.site}` : 'Calculated output from the current scenario inputs'}</p></div><label className="period-select">Period<select value={period} onChange={(event) => void changePeriod(event.target.value as ScenarioPeriod)}><option value="weekly">Weekly</option><option value="monthly">Monthly</option><option value="yearly">Yearly</option></select></label></div>
+        <div className="scenario-results-heading"><div><SectionTitle number={5} title="Scenario Results" /><p>{result ? `${result.snapshot.industry} · ${result.snapshot.emissionSource} · ${result.snapshot.site}` : 'Calculated output from the current scenario inputs'}</p></div><label className="period-select">Period<select value={period} disabled={inventoryLinkEnabled} onChange={(event) => void changePeriod(event.target.value as ScenarioPeriod)}><option value="weekly">Weekly</option><option value="monthly">Monthly</option><option value="yearly">Yearly</option></select></label></div>
         {dirty && result && <div className="scenario-stale-note">Inputs changed. Run the scenario to refresh these results.</div>}
         <div className="scenario-kpi-grid">
           <article className="scenario-kpi"><span>CO₂ captured</span><strong>{result ? `${formatNumber(result.capturedTonnes)} t` : '—'}</strong><small>{period[0].toUpperCase() + period.slice(1)}</small></article>

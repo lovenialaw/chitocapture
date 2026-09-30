@@ -31,17 +31,34 @@ const sources: DataSource[] = [
   },
 ]
 
+const REGISTERED_SOURCES_KEY = 'chitocapture.captureSources.v1'
+let registeredSources: DataSource[] = []
+if (typeof window !== 'undefined') {
+  try { registeredSources = JSON.parse(window.localStorage.getItem(REGISTERED_SOURCES_KEY) ?? '[]') as DataSource[] } catch { registeredSources = [] }
+}
+
 const sourceById = new Map(sources.map((source) => [source.sourceId, source]))
 
 export function getSource(sourceId: string): DataSource | undefined {
-  const source = sourceById.get(sourceId)
+  const source = [...registeredSources].reverse().find((item) => item.sourceId === sourceId) ?? sourceById.get(sourceId)
   return source ? { ...source } : undefined
 }
 
 export function getAllSources(): DataSource[] {
-  return sources.map((source) => ({ ...source }))
+  const combined = new Map(sources.map((source) => [source.sourceId, source]))
+  registeredSources.forEach((source) => combined.set(source.sourceId, source))
+  return [...combined.values()].map((source) => ({ ...source }))
+}
+
+export function registerParameterSource(source: DataSource): void {
+  const index = registeredSources.findIndex((item) => item.sourceId === source.sourceId)
+  if (index >= 0) registeredSources[index] = { ...source }
+  else registeredSources.push({ ...source })
+  if (typeof window !== 'undefined') {
+    try { window.localStorage.setItem(REGISTERED_SOURCES_KEY, JSON.stringify(registeredSources)) } catch { /* In-memory source list remains available. */ }
+  }
 }
 
 export function sourceTypeLabel(sourceType: ParameterSourceType): string {
-  return sourceType === 'assumption' ? 'Assumed' : sourceType === 'literature' ? 'Literature' : 'Simulated'
+  return sourceType === 'assumption' ? 'Assumed' : sourceType === 'literature' ? 'Literature' : sourceType === 'company-data' ? 'Company Data' : 'Simulated'
 }

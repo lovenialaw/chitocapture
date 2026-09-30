@@ -1,4 +1,5 @@
 import type { ModelParameter, ParameterCategory, ParameterValue } from '../types/parameters'
+import { registerParameterSource } from './sources'
 
 const ASSUMPTION_SOURCE = 'SRC-TO-VERIFY'
 const SIMULATION_SOURCE = 'SRC-SIMULATION-CONFIG'
@@ -84,9 +85,31 @@ const parameterList: ModelParameter[] = [
   { id: 'co2-density', name: 'CO₂ density at normal conditions', value: 1.964, unit: 'kg/Nm³', category: 'PHYSICAL CONSTANTS', sourceType: 'assumption', sourceId: ASSUMPTION_SOURCE, editable: true, status: 'needs-verification' },
 ]
 
+const STORAGE_KEY = 'chitocapture.captureParameters.v1'
+if (typeof window !== 'undefined') {
+  try {
+    const saved = window.localStorage.getItem(STORAGE_KEY)
+    if (saved) {
+      const registered = JSON.parse(saved) as ModelParameter[]
+      for (const item of registered) {
+        const parameter = parameterList.find((entry) => entry.id === item.id)
+        if (parameter?.editable && typeof parameter.value === typeof item.value) Object.assign(parameter, item)
+      }
+    }
+  } catch { /* Keep the bundled prototype defaults if saved data is unavailable. */ }
+}
+
 const parametersById = new Map(parameterList.map((parameter) => [parameter.id, parameter]))
 const listeners = new Set<() => void>()
 let parameterRevision = 0
+let scopedOverrides: Record<string, ParameterValue> | null = null
+
+function persistRegisteredParameters() {
+  if (typeof window === 'undefined') return
+  try {
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(parameterList.filter((parameter) => parameter.category !== 'SIMULATION CONFIGURATION' && parameter.category !== 'PHYSICAL CONSTANTS')))
+  } catch { /* The in-memory registry remains available if browser storage is unavailable. */ }
+}
 
 export function getParameter(id: string): ModelParameter | undefined {
   const parameter = parametersById.get(id)
@@ -104,15 +127,24 @@ export function getAllParameters(): ModelParameter[] {
 export function readNumberParameter(id: string): number {
   const parameter = parametersById.get(id)
   if (!parameter) throw new Error(`Unknown model parameter: ${id}`)
-  if (typeof parameter.value !== 'number' || !Number.isFinite(parameter.value)) throw new TypeError(`Model parameter ${id} must be a finite number`)
-  return parameter.value
+  const value = scopedOverrides && id in scopedOverrides ? scopedOverrides[id] : parameter.value
+  if (typeof value !== 'number' || !Number.isFinite(value)) throw new TypeError(`Model parameter ${id} must be a finite number`)
+  return value
 }
 
 export function readStringParameter(id: string): string {
   const parameter = parametersById.get(id)
   if (!parameter) throw new Error(`Unknown model parameter: ${id}`)
-  if (typeof parameter.value !== 'string') throw new TypeError(`Model parameter ${id} must be a string`)
-  return parameter.value
+  const value = scopedOverrides && id in scopedOverrides ? scopedOverrides[id] : parameter.value
+  if (typeof value !== 'string') throw new TypeError(`Model parameter ${id} must be a string`)
+  return value
+}
+
+/** Run a calculation against temporary inputs without mutating the registered values. */
+export function withParameterOverrides<T>(overrides: Record<string, ParameterValue>, run: () => T): T {
+  const previous = scopedOverrides
+  scopedOverrides = { ...previous, ...overrides }
+  try { return run() } finally { scopedOverrides = previous }
 }
 
 export function updateParameter(id: string, value: ParameterValue): ModelParameter {
@@ -123,6 +155,41 @@ export function updateParameter(id: string, value: ParameterValue): ModelParamet
   if (typeof value === 'number' && !Number.isFinite(value)) throw new TypeError(`Model parameter ${id} must be finite`)
   parameter.value = value
   parameterRevision += 1
+  persistRegisteredParameters()
+  listeners.forEach((listener) => listener())
+  return { ...parameter }
+}
+
+export type RegisteredParameterUpdate = Pick<ModelParameter, 'sourceType'> & Partial<Pick<ModelParameter, 'sourceId' | 'sourceTitle' | 'sourcePublisher' | 'sourceYear' | 'sourceUrl' | 'sourceDetails' | 'measurementPeriod' | 'notes' | 'status'>>
+
+/** Explicitly register a value and its provenance in the shared capture registry. */
+export function registerParameter(id: string, value: ParameterValue, provenance: RegisteredParameterUpdate): ModelParameter {
+  const parameter = parametersById.get(id)
+  if (!parameter) throw new Error(`Unknown model parameter: ${id}`)
+  if (!parameter.editable) throw new Error(`Model parameter ${id} is read-only`)
+  if (typeof parameter.value !== typeof value) throw new TypeError(`Model parameter ${id} must retain its ${typeof parameter.value} value type`)
+  if (typeof value === 'number' && !Number.isFinite(value)) throw new TypeError(`Model parameter ${id} must be finite`)
+  if (provenance.sourceType === 'literature' && (!provenance.sourceId || !provenance.sourceTitle)) throw new Error('Literature data requires a source ID and title.')
+  parameter.value = value
+  parameter.sourceType = provenance.sourceType
+  const defaultSourceId = provenance.sourceType === 'company-data' && provenance.sourceTitle?.trim()
+    ? `SRC-COMPANY-${id.toUpperCase()}-${Date.now()}`
+    : 'SRC-TO-VERIFY'
+  parameter.sourceId = provenance.sourceId?.trim() || defaultSourceId
+  parameter.sourceTitle = provenance.sourceTitle?.trim() || undefined
+  parameter.sourcePublisher = provenance.sourcePublisher?.trim() || undefined
+  parameter.sourceYear = provenance.sourceYear ?? null
+  parameter.sourceUrl = provenance.sourceUrl?.trim() || undefined
+  parameter.sourceDetails = provenance.sourceDetails?.trim() || undefined
+  parameter.measurementPeriod = provenance.measurementPeriod?.trim() || undefined
+  parameter.notes = provenance.notes?.trim() || undefined
+  parameter.status = provenance.status ?? (provenance.sourceType === 'assumption' || provenance.sourceType === 'literature' ? 'needs-verification' : 'active')
+  parameter.updatedAt = new Date().toISOString()
+  if (parameter.sourceId !== 'SRC-TO-VERIFY' && (parameter.sourceType === 'company-data' || parameter.sourceType === 'literature')) {
+    registerParameterSource({ sourceId: parameter.sourceId, title: parameter.sourceTitle || 'SOURCE TO BE VERIFIED', sourceType: parameter.sourceType, publisher: parameter.sourcePublisher || (parameter.sourceType === 'company-data' ? 'Company-provided record' : 'Not supplied'), year: parameter.sourceYear ?? null, reference: parameter.sourceDetails || 'Not supplied', url: parameter.sourceUrl, verificationStatus: parameter.sourceType === 'literature' && parameter.status === 'active' ? 'verified' : 'needs-verification', notes: parameter.sourceType === 'literature' ? `User-entered source for ${parameter.name}; verify before treating this value as literature-derived.` : parameter.notes || 'Company-provided value; measurement method and traceability should be checked by the organisation.' })
+  }
+  parameterRevision += 1
+  persistRegisteredParameters()
   listeners.forEach((listener) => listener())
   return { ...parameter }
 }

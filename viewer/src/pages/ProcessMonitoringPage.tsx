@@ -4,8 +4,10 @@ import Header from '../components/Header'
 import PlantViewer from '../components/PlantViewer'
 import SimulationNotice from '../components/SimulationNotice'
 import { getModelLimitNote, simulationAssumptions } from '../data/assumptions'
-import { getParameterRevision, subscribeToParameters } from '../data/parameters'
+import { getParameterRevision, subscribeToParameters, withParameterOverrides } from '../data/parameters'
 import { advanceProcessState, createInitialProcessState } from '../simulation/processEngine'
+import { getActiveScenarioResult, subscribeToActiveScenario } from '../simulation/activeScenario'
+import type { ParameterValue } from '../types/parameters'
 import type { ProcessState } from '../types/process'
 import { formatMalaysiaDateTime } from '../utils/malaysiaTime'
 
@@ -37,17 +39,28 @@ function DevelopmentPanel({ state }: { state: ProcessState }) {
 }
 
 function ProcessMonitoringPage() {
-  useSyncExternalStore(subscribeToParameters, getParameterRevision, getParameterRevision)
-  const [state, setState] = useState<ProcessState>(createInitialProcessState)
+  const parameterRevision = useSyncExternalStore(subscribeToParameters, getParameterRevision, getParameterRevision)
+  const activeScenario = useSyncExternalStore(subscribeToActiveScenario, getActiveScenarioResult, getActiveScenarioResult)
+  const scenarioOverrides: Record<string, ParameterValue> = Object.fromEntries(activeScenario?.snapshot.inputs?.map((input) => [input.parameterId, input.value]) ?? [])
+  const makeState = () => activeScenario ? withParameterOverrides(scenarioOverrides, createInitialProcessState) : createInitialProcessState()
+  const [state, setState] = useState<ProcessState>(makeState)
   const simulatedSecondsPerUpdate = simulationAssumptions.simulatedSecondsPerUpdate
   const updateIntervalMilliseconds = simulationAssumptions.updateIntervalMilliseconds
 
   useEffect(() => {
+    setState(makeState())
+    // A newly saved registry value or scenario starts the monitoring view from those inputs.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeScenario?.snapshot.scenarioId, parameterRevision])
+
+  useEffect(() => {
     const timer = window.setInterval(() => {
-      setState((current) => advanceProcessState(current, simulatedSecondsPerUpdate))
+      setState((current) => activeScenario
+        ? withParameterOverrides(scenarioOverrides, () => advanceProcessState(current, simulatedSecondsPerUpdate))
+        : advanceProcessState(current, simulatedSecondsPerUpdate))
     }, updateIntervalMilliseconds)
     return () => window.clearInterval(timer)
-  }, [simulatedSecondsPerUpdate, updateIntervalMilliseconds])
+  }, [simulatedSecondsPerUpdate, updateIntervalMilliseconds, activeScenario?.snapshot.scenarioId, parameterRevision])
 
   return (
     <div className="dashboard-shell" id="process-monitoring">

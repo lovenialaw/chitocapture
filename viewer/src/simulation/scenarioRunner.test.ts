@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { runScenario, type ScenarioSnapshot } from './scenarioRunner'
+import { getParameter } from '../data/parameters'
 
 const baseline: ScenarioSnapshot = {
   industry: 'Cement',
@@ -82,5 +83,12 @@ describe('process-based scenario time series', () => {
       expect(changed.samples, `changing ${name} should change the modeled time series`).not.toEqual(original.samples)
       expect(changed.energyMWh + changed.capturedTonnes).toBeGreaterThan(0)
     }
+  })
+
+  it('keeps what-if inputs in the immutable run snapshot without changing registered values', () => {
+    const registeredCo2 = getParameter('feed-co2-concentration')!.value
+    const result = runScenario({ ...baseline, co2Concentration: 25 }, 'weekly')
+    expect(getParameter('feed-co2-concentration')?.value).toBe(registeredCo2)
+    expect(result.snapshot.inputs?.find((input) => input.parameterId === 'feed-co2-concentration')).toEqual(expect.objectContaining({ value: 25, provenance: 'scenario-assumption', unit: 'vol %' }))
   })
 })
